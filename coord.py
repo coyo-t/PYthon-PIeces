@@ -2,41 +2,158 @@ from math import sqrt
 from typing import Self
 
 
+def _safe_div (a, b):
+	if b == 0.0:
+		return 0.0
+	return a / b
+
+def _unzip_input (*args):
+	if len(args) == 1 and isinstance(args[0], tuple|list):
+		args = args[0]
+	for value in args:
+		if hasattr(value, '__iter__'):
+			for v in value:
+				yield v
+			continue
+		yield value
+
+
 class CoordBase:
-	ALT_NAMES = ''
-	def __init__ (self):
-		for k in self.__slots__:
-			setattr(self, k, 0.0)
+	__slots__ = ()
+	__alias__ = ()
+	__name__  = ''
 
-	def _combr_init (self, other) -> bool:
-		if hasattr(other, '__iter__'):
-			for k, j in zip(self.__slots__, other):
-				setattr(self, k, j)
-			return True
-		return False
-
-	def _coname (self):
-		return ', '.join(str(k) for k in self)
-
-	def __getitem__ (self, i) -> float:
-		return getattr(self, self.__slots__[i])
-	def __setitem__ (self, i, v):
-		setattr(self, self.__slots__[i], v)
+	@classmethod
+	@property
+	def ZERO (cls):
+		return cls(0.0)
 	
-	def __eq__ (a, b):
-		if hasattr(b, '__iter__'):
-			return all(i == j for i, j in zip(a, b))
+	@classmethod
+	@property
+	def ONE (cls):
+		return cls(1.0)
+
+	def __init__ (self, *args):
+		self.set_co(0.0)
+		if len(args) == 1:
+			self.set_co(args[0])
+			args = args[0]
 		else:
-			return all(i == b for i in a)
-	
-	def __neg__ (self):
-		return self.__class__(-v for v in self)
+			self.set_co(*args)
+
+	def _get_i (self, index: int) -> float:
+		return getattr(self, self.__slots__[index])
+	def _set_i (self, index: int, value: float):
+		setattr(self, self.__slots__[index], value)
+	def _get_s (self, index: str) -> float:
+		return getattr(self, index)
+	def _set_s (self, index: str, value: float):
+		setattr(self, index, value)
+
+	def _swizzle (self, key: str):
+		slots = self.__slots__
+		alias = self.__alias__
+		_alias = None
+		for ch in key:
+			if ch == '_':
+				yield None
+				continue
+			if _alias is None:
+				if ch in slots:
+					_alias = slots
+				else:
+					for a in alias:
+						if ch in a:
+							_alias = a
+							break
+				if _alias is None:
+					raise KeyError(f"Couldn't determine swizzle alias for key {key}")
+			if not ch in _alias:
+				KeyError(f"Can't mix swizzle sets for {key} in {_alias}")
+			yield slots[_alias.index(ch)]
+
+	def _index_list (self, indicies: tuple):
+		for k in indicies:
+			if (k is ...) or (k is None):
+				yield None
+				continue
+			elif isinstance(k, str):
+				yield k
+			elif isinstance(k, int):
+				yield self.__slots__[k]
 
 	def __iter__ (self):
-		return (float(getattr(self, k)) for k in self.__slots__)
+		return (self._get_s(k) for k in self.__slots__)
 
-	def dist_l1 (self, other) -> float:
-		return sum(abs(i-j) for i, j in zip(self, other))
+	def __getitem__ (self, index):
+		if isinstance(index, int):
+			return self._get_i(index)
+		elif index is ...:
+			return self.__class__(*self)
+		
+		if isinstance(index, str):
+			if len(index) == 0:
+				return self.__class__(*self)
+			genr, count = self._swizzle(index), len(index)
+			out = tuple[float](0.0 if k is None else self._get_s(k) for k in genr)
+			if count == 1:
+				return out[0]
+			elif count == 2:
+				return Co2(*out)
+			elif count == 3:
+				return Co3(*out)
+			return out
+		elif hasattr(index, '__iter__'):
+			genr = self._index_list(index)
+			out = tuple[float](0.0 if k is None else self._get_s(k) for k in genr)
+			if len(out) == 1:
+				return out[0]
+			return out
+
+	def __setitem__ (self, index, value):
+		slr = lambda: range(len(self.__slots__))
+		is_dead = lambda x: (x is None) or (x is ...)
+		if hasattr(value, '__iter__'):
+			v_genr = _unzip_input(value)
+		else:
+			v = 0.0 if is_dead(value) else value
+			v_genr = (v for _ in slr())
+		
+		if isinstance(index, int):
+			self._set_i(index, next(v_genr))
+			return
+		elif index is ...:
+			self.set_co(v_genr)
+			return
+		
+		if isinstance(index, str):
+			if len(index) == 0:
+				self.set_co(v_genr)
+				return
+			genr = self._swizzle(index)
+		elif hasattr(index, '__iter__'):
+			genr = self._index_list(index)
+		for i, v, _, in zip(genr, v_genr, range(len(self.__slots__))):
+			if i is None:
+				continue
+			self._set_s(i, v)
+
+	def __repr__ (self):
+		return f"{self.__name__}({', '.join(str(v) for v in self)})"
+
+	def set_co (self, /, *args):
+		if len(args) == 1:
+			args = args[0]
+			if not hasattr(args, '__iter__'):
+				if args is None:
+					args = 0.0
+				for k in self.__slots__:
+					self._set_s(k, args)
+				return
+		for k, v in zip(self.__slots__, _unzip_input(args)):
+			if k is None:
+				continue
+			self._set_s(k, 0.0 if v is None else v)
 
 	def length_squared (self) -> float:
 		return sum(k ** 2 for k in self)
@@ -53,91 +170,109 @@ class CoordBase:
 	def normalize (self):
 		'Normalizes the coord in-place'
 		mag = self._inv_mag()
-		self.set(k * mag for k in self)
+		self.set_co(k * mag for k in self)
 
-	@property
 	def normalized (self):
 		mag = self._inv_mag()
 		return self.__class__(k * mag for k in self)
 
+	def dist_l1 (self, other) -> float:
+		return sum(abs(i-j) for i, j in zip(self, other))
+
 	def dot (self, other) -> float:
 		return sum(a * b for a, b in zip(self, other))
 
-	def set (self, other):
-		if self._combr_init(other):
-			pass
-		elif isinstance(other, float|int):
-			self.x = self.y = self.z = float(other)
-		elif other is None:
-			self.x = self.y = self.z = 0.0
-		return self
+	def __neg__ (self):
+		return self.__class__(-v for v in self)
 
-	@classmethod
-	@property
-	def ZERO (cls) -> Self:
-		return cls(0.0)
+	def _op_uhh (self, thing):
+		if hasattr(thing, '__iter__'):
+			return zip(self, _unzip_input(thing))
+		else:
+			return zip(self, (thing for _ in range(len(self.__slots__))))
 
-	@classmethod
-	@property
-	def ONE (cls) -> Self:
-		return cls(1.0)
+	def __eq__ (self, other) -> bool:
+		other = self._op_uhh(other)
+		return all(a == b for a, b in other)
+
+	def pow (self, other) -> Self:
+		return self.__class__(a ** b for a, b in self._op_uhh(other))
+
+	def __add__ (self, other) -> Self:
+		return self.__class__(a + b for a, b in self._op_uhh(other))
+	def __radd__ (self, other) -> Self:
+		return self.__class__(b + a for a, b in self._op_uhh(other))
+
+	def __sub__ (self, other) -> Self:
+		return self.__class__(a - b for a, b in self._op_uhh(other))
+	def __rsub__ (self, other) -> Self:
+		return self.__class__(b - a for a, b in self._op_uhh(other))
+	
+	def __mul__ (self, other) -> Self:
+		return self.__class__(a * b for a, b in self._op_uhh(other))
+	def __rmul__ (self, other) -> Self:
+		return self.__class__(b * a for a, b in self._op_uhh(other))
+	
+	def __truediv__ (self, other) -> Self:
+		return self.__class__(_safe_div(a, b) for a, b in self._op_uhh(other))
+	def __rtruediv__ (self, other) -> Self:
+		return self.__class__(_safe_div(b, a) for a, b in self._op_uhh(other))
 
 
-class Co2 (CoordBase):
+class Co2(CoordBase):
 	__slots__ = 'x', 'y'
-	ALT_NAMES = 'st', 'uv'
-	def __init__ (self, x = None, y = None):
-		super().__init__()
-		if x is None:
-			return
-		if y is None:
-			self.set(x)
-			return
-		self.x = float(x)
-		self.y = float(y)
+	__alias__ = 'uv', 'st', 'ij'
+	__name__ = 'Co2'
+	def __init__ (self, /, *args, x = None, y = None):
+		if len(args) == 0:
+			args = (x, y)
+		super().__init__(*args)
 
-	def __le__ (a, b):
+	def __le__ (a, b: Self) -> bool:
 		return (a.x < b.x) or (a.x == b.x and a.y <= b.y)
 
-	def __repr__ (self):
-		return f'{__class__.__name__}({self._coname()})'
-
-	@property
-	def yx (self):
-		'This should be replaced with proper swizzling'
-		return Co2(self.y, self.x)
-
-
-class Co3 (CoordBase):
+class Co3(CoordBase):
 	__slots__ = 'x', 'y', 'z'
-	ALT_NAMES = 'stp', 'uvw'
-	def __init__ (self, x = None, y = None, z = None):
-		super().__init__()
-		if x is None:
-			return
+	__alias__ = 'stp', 'uvw', 'ijk', 'rgb'
+	__name__ = 'Co3'
+	def __init__ (self, /, *args, x = None, y = None, z = None):
+		if len(args) == 0:
+			args = (x, y, z)
+		super().__init__(*args)
 
-		if y is None:
-			self.set(x)
-			return
-
-		if z is None:
-			z = 0.0
-
-		self.x = float(x)
-		self.y = float(y)
-		self.z = float(z)
-
-	def __repr__ (self):
-		return f'{__class__.__name__}({self._coname()})'
-
-	def cross (d1, d2: Self):
-		return Co3(d1.y*d2.z - d1.z*d2.y,
-		           d1.z*d2.x - d1.x*d2.z,
-		           d1.x*d2.y - d1.y*d2.x)
+	def cross (a, b: Self):
+		return Co3(a.y*b.z - a.z*b.y,
+		           a.z*b.x - a.x*b.z,
+		           a.x*b.y - a.y*b.x)
 
 
-if __name__ == '__main__':
-	c1 = Co2(1, 1).normalized
+class Co4(CoordBase):
+	__slots__ = 'x', 'y', 'z', 'w'
+	__alias__ = 'rgba', 'stpq', 'ijkl'
+	__name__ = 'Co4'
+	def __init__ (self, /, *args, r = None, g = None, b = None, a = None):
+		if len(args) == 0:
+			args = (r, g, b, a)
+		super().__init__(*args)
+
+
+def __main ():
+	pass
+	a = Co2(0xDEAD, 0xBADA55); print(a)
+	b = Co3()
+	b['xz'] = a; print(b)
+	b[...] = 1.0; print(b)
+	b[0, 2, 1] = 10, 20, 30; print(b)
+	b[...] = (29, 2, 202); print(b)
+
+	a = Co3(+10, +20, +30)
+	b = Co3(-10, -20, -30)
+
+	a1 = a['xy']
+	a2 = b.z
+	print(Co3(a1, a2))
+
+	c1 = Co2(1, 1).normalized()
 	c2 = Co2(1, 1)
 	c2.normalize()
 	print(c1.dot(c2))
@@ -153,3 +288,19 @@ if __name__ == '__main__':
 	print(Co3((10, 20, 30, 40)) == (10, 20, 30, 999))
 	print(Co2.ZERO, Co2.ONE)
 	print(Co3.ZERO, Co3.ONE)
+
+	print(c3[0], c3[1], c3[2])
+	print(c3[0, 1, 2])
+	print(c3['xyz'])
+	print(c3['zyz'])
+	print(c3['_x_'])
+	c3['zyx'] = 30, 20, 10
+	print(c3)
+	c3['z_x'] = 3, 2, 1
+	print(c3)
+	c3[0, ..., 1] = 29, 2, 20
+	print(c3)
+
+
+if __name__ == '__main__':
+	__main()
